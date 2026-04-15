@@ -158,18 +158,19 @@ class OrderCreate(BaseModel):
 
 class ScheduleRequest(BaseModel):
     """
-    Параметры расчёта расписания. Плановый период — полуинтервал размещения операций в UTC.
+    Параметры расчёта расписания. Моменты периода — абсолютное время в ISO-8601 с явным offset
+    (например `...+04:00` для Самары или `Z` для UTC); наивные datetime не принимаются проверкой 422.
 
     Если оба поля периода не заданы, используется период по умолчанию (см. описание POST /api/schedule).
     """
 
     period_start: datetime | None = Field(
         default=None,
-        description="Начало планового периода (UTC, с offset). Вместе с period_end или оба пустые.",
+        description="Начало планового периода (timezone-aware ISO-8601). Вместе с period_end или оба пустые.",
     )
     period_end: datetime | None = Field(
         default=None,
-        description="Конец планового периода (UTC). Операции не выходят за min(period_end, planned_end заказа).",
+        description="Конец планового периода (timezone-aware). Операции не выходят за min(period_end, planned_end заказа).",
     )
 
     @model_validator(mode="after")
@@ -247,7 +248,9 @@ class ResourceUtilizationRow(BaseModel):
     name: str
     detail: str = Field(description="Профессия (worker) или модель (equipment).")
     busy_minutes: float = Field(description="Сумма длительностей операций на ресурсе, мин.")
-    available_minutes: int = Field(description="T_avail — длина периода в минутах (одинакова для всех в MVP).")
+    available_minutes: int = Field(
+        description="T_avail — сумма минут рабочих окон календаря участка внутри периода (одинакова для всех в MVP)."
+    )
     utilization_percent: float = Field(ge=0, le=100, description="T_busy / T_avail · 100%, не выше 100.")
     idle_percent: float = Field(ge=0, le=100, description="100 − загрузка.")
 
@@ -287,7 +290,9 @@ class ScheduleReportMetrics(BaseModel):
 
     period_start: datetime = Field(description="Начало планового периода (UTC).")
     period_end: datetime = Field(description="Конец планового периода (UTC).")
-    available_minutes_per_resource: int = Field(description="T_avail в минутах на каждый ресурс.")
+    available_minutes_per_resource: int = Field(
+        description="T_avail в минутах на каждый ресурс (календарь участка внутри периода)."
+    )
     workers: list[ResourceUtilizationRow]
     equipment: list[ResourceUtilizationRow]
     aggregate: AggregateUtilizationMetrics

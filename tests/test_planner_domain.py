@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -21,6 +22,19 @@ from backend.planner import (
 
 def _utc(*args: int) -> datetime:
     return datetime(*args, tzinfo=timezone.utc)
+
+
+SAMARA_TZ = ZoneInfo("Europe/Samara")
+
+
+def _interval_overlaps_samara_lunch(st: datetime, en: datetime) -> bool:
+    """Пересечение с локальным перерывом 12:00–13:00 (один календарный день в Самаре)."""
+    st_l = st.astimezone(SAMARA_TZ)
+    en_l = en.astimezone(SAMARA_TZ)
+    assert st_l.date() == en_l.date(), "тест ожидает операцию в пределах одних суток по Самаре"
+    lo = st_l.replace(hour=12, minute=0, second=0, microsecond=0)
+    hi = st_l.replace(hour=13, minute=0, second=0, microsecond=0)
+    return st_l < hi and en_l > lo
 
 
 def _assert_no_resource_overlaps(planned: list[dict]) -> None:
@@ -91,8 +105,9 @@ def test_all_or_nothing_second_order_excluded_when_no_time(db_session: Session) 
     db_session.add_all([w, e])
     db_session.flush()
 
-    ps = _utc(2026, 1, 1, 8, 0)
-    pe = _utc(2026, 1, 1, 9, 35)
+    # 95 минут утреннего куска 08:00–12:00 по Europe/Samara (1 янв. 2026 — чт): 04:00–05:35 UTC.
+    ps = _utc(2026, 1, 1, 4, 0)
+    pe = _utc(2026, 1, 1, 5, 35)
     o_high = Order(
         name="High",
         profit=Decimal("100"),
@@ -269,3 +284,120 @@ def test_order_outside_period_excluded(db_session: Session) -> None:
     assert planned == []
     assert len(exclusions) == 1
     assert exclusions[0].code == EXCLUDED_OUTSIDE_PERIOD
+
+
+def test_saturday_in_period_no_scheduled_operations(db_session: Session) -> None:
+    """Период только по субботе (Europe/Samara) — рабочих окон нет, операций не создаётся."""
+    tp = TechProcess(name="TP_SAT")
+    db_session.add(tp)
+    db_session.flush()
+    db_session.add(
+        Task(
+            tech_process_id=tp.id,
+            sequence_number=1,
+            duration_minutes=30,
+            profession="psat",
+            equipment_model="msat",
+        )
+    )
+    db_session.flush()
+    w = Worker(name="Ws", profession="psat")
+    e = Equipment(name="Es", model="msat")
+    db_session.add_all([w, e])
+    db_session.flush()
+    o = Order(
+        name="SatOrder",
+        profit=Decimal("1"),
+        planned_start=_utc(2026, 1, 1, 0, 0),
+        planned_end=_utc(2026, 12, 31, 23, 0),
+        tech_process_id=tp.id,
+    )
+    db_session.add(o)
+    db_session.commit()
+    _ = o.tech_process
+    for t in o.tech_process.tasks:
+        _ = t
+
+    ps = datetime(2026, 4, 18, 0, 0, 0, tzinfo=SAMARA_TZ).astimezone(timezone.utc)
+    pe = datetime(2026, 4, 19, 0, 0, 0, tzinfo=SAMARA_TZ).astimezone(timezone.utc)
+    planned, exclusions = greedy_planner(
+        db_session.query(Order).all(),
+        db_session.query(Worker).all(),
+        db_session.query(Equipment).all(),
+        ps,
+        pe,
+    )
+    assert planned == []
+    assert exclusions and exclusions[0].code == EXCLUDED_TIME_CONFLICT
+
+
+def test_operations_do_not_overlap_lunch_samara(db_session: Session) -> None:
+    """После заполнения утреннего куска следующая операция с 13:00 по Самаре, не в 12–13."""
+    tp_fill = TechProcess(name="TP_FILL")
+    db_session.add(tp_fill)
+    db_session.flush()
+    for seq in range(1, 5):
+        db_session.add(
+            Task(
+                tech_process_id=tp_fill.id,
+                sequence_number=seq,
+                duration_minutes=60,
+                profession="plunch",
+                equipment_model="mlunch",
+                name=f"T{seq}",
+            )
+        )
+    tp_one = TechProcess(name="TP_ONE")
+    db_session.add(tp_one)
+    db_session.flush()
+    db_session.add(
+        Task(
+            tech_process_id=tp_one.id,
+            sequence_number=1,
+            duration_minutes=60,
+            profession="plunch",
+            equipment_model="mlunch",
+            name="After",
+        )
+    )
+    db_session.flush()
+    w = Worker(name="Wl", profession="plunch")
+    e = Equipment(name="El", model="mlunch")
+    db_session.add_all([w, e])
+    db_session.flush()
+    day = datetime(2026, 4, 13, 8, 0, 0, tzinfo=SAMARA_TZ)
+    day_end = datetime(2026, 4, 13, 17, 0, 0, tzinfo=SAMARA_TZ)
+    win_s, win_e = day.astimezone(timezone.utc), day_end.astimezone(timezone.utc)
+    o_big = Order(
+        name="FillMorning",
+        profit=Decimal("500"),
+        planned_start=win_s,
+        planned_end=win_e,
+        tech_process_id=tp_fill.id,
+    )
+    o_small = Order(
+        name="Afternoon",
+        profit=Decimal("100"),
+        planned_start=win_s,
+        planned_end=win_e,
+        tech_process_id=tp_one.id,
+    )
+    db_session.add_all([o_big, o_small])
+    db_session.commit()
+    for o in (o_big, o_small):
+        _ = o.tech_process
+        for t in o.tech_process.tasks:
+            _ = t
+
+    planned, _ = greedy_planner(
+        db_session.query(Order).all(),
+        db_session.query(Worker).all(),
+        db_session.query(Equipment).all(),
+        win_s,
+        win_e,
+    )
+    assert len(planned) == 5
+    for p in planned:
+        assert not _interval_overlaps_samara_lunch(p["start_time"], p["end_time"])
+    last = max(planned, key=lambda x: x["start_time"])
+    assert last["start_time"].astimezone(SAMARA_TZ).hour >= 13

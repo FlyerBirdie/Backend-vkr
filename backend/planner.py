@@ -1,10 +1,10 @@
 """
 Жадный алгоритм планирования под доменные ограничения.
 
-**Плановый период:** отбор заказов и размещение операций только в пересечении
-глобального окна [period_start, period_end] (UTC) и окна заказа
-[planned_start, planned_end]. Операции не начинаются раньше period_start и
-заканчиваются не позже period_end (с учётом пересечения с окном заказа).
+**Плановый период:** отбор заказов и размещение операций в пересечении глобального окна
+[period_start, period_end], окна заказа [planned_start, planned_end] и рабочих кусков
+календаря участка (см. backend/work_calendar.py). Операции не выходят за пределы этого
+пересечения.
 
 **Целевая функция (требование домена):** максимизация суммарной прибыли по полностью
 включённым заказам. После расчёта явно проверяется, что сумма profit по включённым
@@ -21,6 +21,11 @@
 
 Ресурсы: у одного worker_id и у одной equipment_id интервалы операций не пересекаются
 (граница «конец = начало» следующей допустима).
+
+**Календарь участка (MVP):** см. backend/work_calendar.py — пн–пт, 08:00–17:00 в зоне
+APP_TIMEZONE (по умолчанию Europe/Samara), перерыв 12:00–13:00; оборудование использует
+тот же календарь. Операция целиком укладывается в один рабочий кусок (до 4 ч); более
+длинные задачи в этой версии не делятся по перерыву и не планируются.
 """
 from __future__ import annotations
 
@@ -30,6 +35,8 @@ from decimal import Decimal
 from typing import TypedDict
 
 from backend.models import Equipment, Order, Task, Worker
+from backend.time_settings import get_app_zoneinfo
+from backend.work_calendar import clip_intervals_to_window, work_intervals_utc
 
 # Коды исключения заказа из расписания (машиночитаемые, стабильные).
 EXCLUDED_OUTSIDE_PERIOD = "SCHEDULE_EXCLUDED_OUTSIDE_PERIOD"
@@ -90,13 +97,15 @@ def order_sort_key_for_planner(order: Order) -> tuple[Decimal, int]:
 
 def default_planning_period() -> tuple[datetime, datetime]:
     """
-    Период планирования по умолчанию для демо и запросов без явных дат:
-    с 00:00 UTC текущих суток на 14 суток вперёд (конец — верхняя граница для последней операции).
+    Период по умолчанию: с полуночи текущих календарных суток участка (Europe/Samara)
+    до того же локального времени через 14 календарных дней; границы в UTC.
     """
-    now = datetime.now(timezone.utc)
-    period_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    period_end = period_start + timedelta(days=14)
-    return period_start, period_end
+    tz = get_app_zoneinfo()
+    now_utc = datetime.now(timezone.utc)
+    local = now_utc.astimezone(tz)
+    local_start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    local_end = local_start + timedelta(days=14)
+    return local_start.astimezone(timezone.utc), local_end.astimezone(timezone.utc)
 
 
 def _sorted_tasks(order: Order) -> list[Task]:
@@ -104,46 +113,50 @@ def _sorted_tasks(order: Order) -> list[Task]:
     return sorted(order.tech_process.tasks, key=lambda t: t.sequence_number)
 
 
-def _find_earliest_slot(
+def _find_earliest_slot_in_chunks(
     duration_minutes: int,
     from_time: datetime,
     worker_busy: list[tuple[datetime, datetime]],
     equipment_busy: list[tuple[datetime, datetime]],
-    not_after_end: datetime,
+    chunks: list[tuple[datetime, datetime]],
 ) -> datetime | None:
     """
-    Ближайший старт, при котором рабочий и оборудование свободны на duration_minutes,
-    начиная не раньше from_time, окончание не позже not_after_end.
+    Ближайший старт в объединении кусков рабочего календаря: операция целиком внутри одного
+    куска; при конфликте сдвиг за занятость; при выходе за конец куска — следующий кусок
+    (переход через перерыв/ночь обрабатывается перебором кусков).
     """
-    slot_start = from_time
     delta = timedelta(minutes=duration_minutes)
-    if slot_start + delta > not_after_end:
-        return None
+    ft = _ensure_utc(from_time)
 
-    def is_free(
-        start: datetime,
-        busy: list[tuple[datetime, datetime]],
-    ) -> bool:
+    def is_free(start: datetime, busy: list[tuple[datetime, datetime]]) -> bool:
         slot_end = start + delta
         for b_start, b_end in busy:
             if start < b_end and slot_end > b_start:
                 return False
         return True
 
-    max_iter = 10000
-    while max_iter > 0:
-        if slot_start + delta > not_after_end:
-            return None
-        if is_free(slot_start, worker_busy) and is_free(slot_start, equipment_busy):
-            return slot_start
-        next_candidate = slot_start
-        for b_start, b_end in worker_busy + equipment_busy:
-            if b_end > slot_start and (next_candidate == slot_start or b_end < next_candidate):
-                next_candidate = b_end
-        if next_candidate == slot_start:
-            break
-        slot_start = next_candidate
-        max_iter -= 1
+    for cs, ce in chunks:
+        if ft >= ce:
+            continue
+        slot_start = max(ft, cs)
+        if slot_start + delta > ce:
+            continue
+        max_iter = 10000
+        while max_iter > 0:
+            if slot_start + delta > ce:
+                break
+            if is_free(slot_start, worker_busy) and is_free(slot_start, equipment_busy):
+                return slot_start
+            next_candidate = slot_start
+            for b_start, b_end in worker_busy + equipment_busy:
+                if b_end > slot_start and (next_candidate == slot_start or b_end < next_candidate):
+                    next_candidate = b_end
+            if next_candidate == slot_start:
+                break
+            slot_start = next_candidate
+            if slot_start < cs:
+                slot_start = cs
+            max_iter -= 1
     return None
 
 
@@ -221,6 +234,8 @@ def greedy_planner(
     ps = _ensure_utc(period_start)
     pe = _ensure_utc(period_end)
 
+    period_work_chunks = work_intervals_utc(ps, pe)
+
     sorted_orders = sorted(orders, key=_order_sort_key)
 
     worker_busy: dict[int, list[tuple[datetime, datetime]]] = {w.id: [] for w in workers}
@@ -264,6 +279,7 @@ def greedy_planner(
         o_end = _ensure_utc(order.planned_end)
         window_start = max(ps, o_start)
         window_end = min(pe, o_end)
+        order_chunks = clip_intervals_to_window(period_work_chunks, window_start, window_end)
 
         op_start = window_start
         tasks = _sorted_tasks(order)
@@ -301,12 +317,12 @@ def greedy_planner(
 
             for w in cand_workers:
                 for e in cand_equipment:
-                    slot = _find_earliest_slot(
+                    slot = _find_earliest_slot_in_chunks(
                         task.duration_minutes,
                         op_start,
                         worker_busy[w.id],
                         equipment_busy[e.id],
-                        window_end,
+                        order_chunks,
                     )
                     if slot is None:
                         continue

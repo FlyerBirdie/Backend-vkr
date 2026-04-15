@@ -26,6 +26,12 @@ def test_health_public(client: TestClient) -> None:
     assert r.json().get("status") == "ok"
 
 
+def test_login_form_urlencoded_ok(client: TestClient) -> None:
+    r = client.post("/api/auth/login", data={"username": "planner", "password": "testpass"})
+    assert r.status_code == 200, r.text
+    assert r.json().get("token_type") == "bearer"
+
+
 def test_login_and_orders_with_token(client: TestClient) -> None:
     r = client.post("/api/auth/login", json={"username": "planner", "password": "testpass"})
     assert r.status_code == 200, r.text

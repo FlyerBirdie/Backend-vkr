@@ -78,6 +78,18 @@ def validate_planning_inputs(
     profs = {w.profession for w in workers}
     models = {e.model for e in equipment}
 
+    if period_start.tzinfo is None or period_end.tzinfo is None:
+        result.errors.append(
+            PlanningIssue(
+                level="error",
+                code="PERIOD_DATETIME_NAIVE",
+                message=(
+                    "Плановый период: задайте timezone-aware ISO-8601 для period_start и period_end "
+                    "(суффикс Z для UTC или смещение, например +04:00 для Самары)."
+                ),
+            )
+        )
+
     if period_end <= period_start:
         result.errors.append(
             PlanningIssue(
@@ -89,6 +101,20 @@ def validate_planning_inputs(
 
     for order in orders:
         ps, pe = order.planned_start, order.planned_end
+        if ps.tzinfo is None or pe.tzinfo is None:
+            result.errors.append(
+                PlanningIssue(
+                    level="error",
+                    code="ORDER_WINDOW_DATETIME_NAIVE",
+                    message=(
+                        f"Заказ «{order.name}»: planned_start и planned_end должны быть timezone-aware "
+                        "(ISO-8601 с Z или числовым смещением), без наивных datetime."
+                    ),
+                    order_id=order.id,
+                    order_name=order.name,
+                )
+            )
+            continue
         if ps >= pe:
             result.errors.append(
                 PlanningIssue(

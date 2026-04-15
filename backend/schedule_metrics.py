@@ -2,8 +2,9 @@
 Метрики загрузки ресурсов для POST /api/schedule (демо, ВКР).
 
 Формула (MVP, упрощённо):
-- Плановый период [period_start, period_end] (UTC), длительность T_avail минут
-  одинакова для каждого ресурса из справочника (доступный фонд времени на ресурс).
+- T_avail — сумма минут пересечения общего календаря участка (пн–пт, окна 08–12 и 13–17
+  по Europe/Samara, см. backend/work_calendar.py) с [period_start, period_end]; одинакова
+  для каждого ресурса (люди и оборудование — один календарь).
 - Для рабочего w: T_busy(w) = сумма (end_time − start_time) в минутах по всем операциям
   расписания с worker_id = w. Аналогично для единицы оборудования e по equipment_id.
 - Загрузка ресурса: U = min(100, T_busy / T_avail * 100) при T_avail > 0; иначе 0.
@@ -27,7 +28,9 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
+
 from backend.models import Equipment, Operation, Worker
+from backend.work_calendar import total_available_work_minutes
 
 
 def _duration_minutes(start: datetime, end: datetime) -> float:
@@ -35,7 +38,8 @@ def _duration_minutes(start: datetime, end: datetime) -> float:
 
 
 def period_available_minutes(period_start: datetime, period_end: datetime) -> int:
-    return max(0, int((period_end - period_start).total_seconds() // 60))
+    """Доступный фонд минут по календарю участка внутри планового периода (не длина суток)."""
+    return total_available_work_minutes(period_start, period_end)
 
 
 @dataclass
