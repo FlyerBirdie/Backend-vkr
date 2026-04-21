@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from backend.order_status import OrderStatus
+
 
 # --- Аутентификация (роль planner) ---
 class LoginRequest(BaseModel):
@@ -22,7 +24,7 @@ class TokenResponse(BaseModel):
 
 class OrderResponse(BaseModel):
     """Схема ответа с заказом."""
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, use_enum_values=True)
 
     id: int
     name: str
@@ -30,6 +32,12 @@ class OrderResponse(BaseModel):
     planned_start: datetime
     planned_end: datetime
     tech_process_id: int
+    status: OrderStatus = Field(
+        description=(
+            "Жизненный цикл: draft — черновик; scheduled — допущен к POST /api/schedule; "
+            "in_progress — в работе (MVP: не планируется повторно); completed / cancelled — терминальные."
+        ),
+    )
 
 
 class OrderUpdate(BaseModel):
@@ -40,6 +48,10 @@ class OrderUpdate(BaseModel):
     planned_start: datetime | None = None
     planned_end: datetime | None = None
     tech_process_id: int | None = None
+    status: OrderStatus | None = Field(
+        default=None,
+        description="Смена статуса: допустимые переходы см. assert_order_status_transition_allowed в backend.order_status.",
+    )
 
     @model_validator(mode="after")
     def planned_window(self) -> "OrderUpdate":
@@ -72,11 +84,19 @@ class WorkerResponse(BaseModel):
 class EquipmentCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     model: str = Field(min_length=1, max_length=100, description="Модель для сопоставления с Task.equipment_model.")
+    is_active: bool = Field(
+        default=True,
+        description="False — единица не участвует в POST /api/schedule, видна в справочнике как выключенная.",
+    )
 
 
 class EquipmentUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     model: str | None = Field(default=None, min_length=1, max_length=100)
+    is_active: bool | None = Field(
+        default=None,
+        description="Выключить (false) или снова включить (true) без удаления записи.",
+    )
 
 
 class EquipmentResponse(BaseModel):
@@ -85,6 +105,7 @@ class EquipmentResponse(BaseModel):
     id: int
     name: str
     model: str
+    is_active: bool = Field(description="Участие в планировании: только активные единицы выбираются планировщиком.")
 
 
 # --- TechProcess / Task ---
@@ -148,11 +169,24 @@ class OrderCreate(BaseModel):
     planned_start: datetime
     planned_end: datetime
     tech_process_id: int
+    status: OrderStatus = Field(
+        default=OrderStatus.draft,
+        description="По умолчанию draft; для немедленного планирования задайте scheduled.",
+    )
 
     @model_validator(mode="after")
     def planned_window(self) -> "OrderCreate":
         if self.planned_end <= self.planned_start:
             raise ValueError("planned_end должен быть позже planned_start.")
+        return self
+
+    @model_validator(mode="after")
+    def no_terminal_on_create(self) -> "OrderCreate":
+        if self.status in (OrderStatus.completed, OrderStatus.cancelled):
+            raise ValueError(
+                "Нельзя создать заказ сразу в статусе completed или cancelled; "
+                "используйте draft, scheduled или in_progress."
+            )
         return self
 
 
@@ -202,7 +236,8 @@ class ScheduleIssueItem(BaseModel):
     code: str = Field(
         description=(
             "Стабильный код, например TASK_NO_MATCHING_WORKER или "
-            "SCHEDULE_EXCLUDED_OUTSIDE_PERIOD / SCHEDULE_EXCLUDED_NO_PAIR / SCHEDULE_EXCLUDED_TIME_CONFLICT."
+            "SCHEDULE_EXCLUDED_OUTSIDE_PERIOD / SCHEDULE_EXCLUDED_NO_PAIR / SCHEDULE_EXCLUDED_NO_ACTIVE_EQUIPMENT_FOR_MODEL / "
+            "SCHEDULE_EXCLUDED_TIME_CONFLICT / SCHEDULE_EXCLUDED_ORDER_STATUS; в 422 также TASK_NO_ACTIVE_EQUIPMENT_FOR_MODEL."
         ),
     )
     message: str

@@ -11,6 +11,7 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 
 from backend.models import Equipment, Order, Task, TechProcess, Worker
+from backend.order_status import OrderStatus
 from backend.planning_validation import assert_planned_all_or_nothing
 from backend.planner import (
     EXCLUDED_OUTSIDE_PERIOD,
@@ -114,6 +115,7 @@ def test_all_or_nothing_second_order_excluded_when_no_time(db_session: Session) 
         planned_start=ps,
         planned_end=pe,
         tech_process_id=tp.id,
+        status=OrderStatus.scheduled.value,
     )
     o_low = Order(
         name="Low",
@@ -121,6 +123,7 @@ def test_all_or_nothing_second_order_excluded_when_no_time(db_session: Session) 
         planned_start=ps,
         planned_end=pe,
         tech_process_id=tp.id,
+        status=OrderStatus.scheduled.value,
     )
     db_session.add_all([o_high, o_low])
     db_session.commit()
@@ -173,6 +176,7 @@ def test_operations_inside_period(db_session: Session) -> None:
         planned_start=ps,
         planned_end=pe,
         tech_process_id=tp.id,
+        status=OrderStatus.scheduled.value,
     )
     db_session.add(o)
     db_session.commit()
@@ -222,6 +226,7 @@ def test_no_overlaps_and_sequence(db_session: Session) -> None:
         planned_start=ps,
         planned_end=pe,
         tech_process_id=tp.id,
+        status=OrderStatus.scheduled.value,
     )
     db_session.add(o)
     db_session.commit()
@@ -265,6 +270,7 @@ def test_order_outside_period_excluded(db_session: Session) -> None:
         planned_start=_utc(2030, 1, 1, 0, 0),
         planned_end=_utc(2030, 1, 2, 0, 0),
         tech_process_id=tp.id,
+        status=OrderStatus.scheduled.value,
     )
     db_session.add(o)
     db_session.commit()
@@ -311,6 +317,7 @@ def test_saturday_in_period_no_scheduled_operations(db_session: Session) -> None
         planned_start=_utc(2026, 1, 1, 0, 0),
         planned_end=_utc(2026, 12, 31, 23, 0),
         tech_process_id=tp.id,
+        status=OrderStatus.scheduled.value,
     )
     db_session.add(o)
     db_session.commit()
@@ -374,6 +381,7 @@ def test_operations_do_not_overlap_lunch_samara(db_session: Session) -> None:
         planned_start=win_s,
         planned_end=win_e,
         tech_process_id=tp_fill.id,
+        status=OrderStatus.scheduled.value,
     )
     o_small = Order(
         name="Afternoon",
@@ -381,6 +389,7 @@ def test_operations_do_not_overlap_lunch_samara(db_session: Session) -> None:
         planned_start=win_s,
         planned_end=win_e,
         tech_process_id=tp_one.id,
+        status=OrderStatus.scheduled.value,
     )
     db_session.add_all([o_big, o_small])
     db_session.commit()

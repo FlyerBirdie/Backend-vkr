@@ -8,7 +8,9 @@ from sqlalchemy.orm import Session
 
 from backend.database import get_db
 from backend.models import Equipment, Operation, Order, Worker
+from backend.order_status import human_reason_excluded_from_planning, statuses_eligible_for_planning
 from backend.planner import (
+    EXCLUDED_ORDER_STATUS,
     PlannedOperation,
     PlannerExclusion,
     default_planning_period,
@@ -74,6 +76,10 @@ def build_schedule(
     Заказ либо целиком попадает в ответ (`included_orders`), либо перечислен в `excluded_orders`
     с кодом и причиной (принцип «всё или ничё»). Частично запланированных заказов в `operations` нет.
 
+    **Статусы заказов:** в расчёт попадают только заказы со статусом ``scheduled``; остальные
+    не меняют предпроверку ТП и не передаются в планировщик, но перечисляются в ``excluded_orders``
+    с кодом ``SCHEDULE_EXCLUDED_ORDER_STATUS`` (см. ``backend.order_status``).
+
     Поле **`metrics`**: загрузка персонала и оборудования в % от **фонда рабочего календаря**
     внутри периода (не от полной длины периода календарём), агрегаты, узкие места, рекомендации-заглушки.
 
@@ -85,17 +91,31 @@ def build_schedule(
     else:
         period_start, period_end = body.period_start, body.period_end
 
-    orders = db.query(Order).all()
+    all_orders = db.query(Order).all()
     workers = db.query(Worker).all()
     equipment = db.query(Equipment).all()
 
-    for o in orders:
+    eligible_statuses = statuses_eligible_for_planning()
+    planning_orders = [o for o in all_orders if o.status in eligible_statuses]
+    status_exclusions: list[PlannerExclusion] = [
+        PlannerExclusion(
+            order_id=o.id,
+            order_name=o.name,
+            reason=human_reason_excluded_from_planning(o.status),
+            code=EXCLUDED_ORDER_STATUS,
+        )
+        for o in all_orders
+        if o.status not in eligible_statuses
+    ]
+    status_exclusions.sort(key=lambda x: x.order_id)
+
+    for o in planning_orders:
         _ = o.tech_process
         for t in o.tech_process.tasks:
             _ = t
 
     validation_result = validate_planning_inputs(
-        orders, workers, equipment, period_start, period_end
+        planning_orders, workers, equipment, period_start, period_end
     )
     if not validation_result.ok:
         payload = PlanningValidationErrorContent(
@@ -114,10 +134,10 @@ def build_schedule(
     planned: list[PlannedOperation]
     planner_exclusions: list[PlannerExclusion]
     planned, planner_exclusions = greedy_planner(
-        orders, workers, equipment, period_start, period_end
+        planning_orders, workers, equipment, period_start, period_end
     )
 
-    orders_by_id = {o.id: o for o in orders}
+    orders_by_id = {o.id: o for o in planning_orders}
     assert_planned_all_or_nothing(planned, orders_by_id)
 
     try:
@@ -142,13 +162,14 @@ def build_schedule(
     total_profit = total_profit_of_included_orders(planned, orders_by_id)
 
     included_orders: list[IncludedOrderItem] = []
-    planned_order_objs = [o for o in orders if o.id in order_ids_planned]
+    planned_order_objs = [o for o in planning_orders if o.id in order_ids_planned]
     planned_order_objs.sort(key=order_sort_key_for_planner)
     for order in planned_order_objs:
         included_orders.append(
             IncludedOrderItem(id=order.id, name=order.name, profit=order.profit)
         )
 
+    merged_exclusions = status_exclusions + planner_exclusions
     excluded_orders = [
         ExcludedOrderItem(
             order_id=e.order_id,
@@ -156,14 +177,14 @@ def build_schedule(
             code=e.code,
             reason=e.reason,
         )
-        for e in planner_exclusions
+        for e in merged_exclusions
     ]
 
     issues: list[ScheduleIssueItem] = [
         ScheduleIssueItem.model_validate(planning_issue_to_api_dict(w))
         for w in validation_result.warnings
     ]
-    for ex in planner_exclusions:
+    for ex in merged_exclusions:
         issues.append(
             ScheduleIssueItem(
                 level="warning",

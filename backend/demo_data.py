@@ -14,6 +14,7 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 
 from backend.models import Equipment, Order, Task, TechProcess, Worker
+from backend.order_status import OrderStatus
 
 # Единое демо-окно: весь календарный год (UTC), внутри него укладывается период по умолчанию.
 _DEMO_WINDOW_START = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
@@ -91,15 +92,16 @@ _WORKERS: list[tuple[str, str]] = [
 ]
 
 # Несколько единиц одной модели — параллельная загрузка в жадном планировщике.
-_EQUIPMENT: list[tuple[str, str]] = [
-    ("Станок Л-1", "лазерный станок"),
-    ("Станок Л-2", "лазерный станок"),
-    ("Пресс Г-1", "гибочный пресс"),
-    ("Пресс Г-2", "гибочный пресс"),
-    ("Аппарат СВА-1", "сварочный аппарат"),
-    ("Аппарат СВА-2", "сварочный аппарат"),
-    ("Камера КП-1", "камера покраски"),
-    ("Камера КП-2", "камера покраски"),
+# (имя, модель, is_active) — одна линия выключена для демо недоступного станка.
+_EQUIPMENT: list[tuple[str, str, bool]] = [
+    ("Станок Л-1", "лазерный станок", True),
+    ("Станок Л-2", "лазерный станок", False),
+    ("Пресс Г-1", "гибочный пресс", True),
+    ("Пресс Г-2", "гибочный пресс", True),
+    ("Аппарат СВА-1", "сварочный аппарат", True),
+    ("Аппарат СВА-2", "сварочный аппарат", True),
+    ("Камера КП-1", "камера покраски", True),
+    ("Камера КП-2", "камера покраски", True),
 ]
 
 
@@ -193,13 +195,14 @@ def init_demo_data(db: Session) -> None:
                 planned_start=_DEMO_WINDOW_START,
                 planned_end=_DEMO_WINDOW_END,
                 tech_process_id=tp_id,
+                status=OrderStatus.scheduled.value,
             )
         )
 
     for name, profession in _WORKERS:
         db.add(Worker(name=name, profession=profession))
 
-    for name, model in _EQUIPMENT:
-        db.add(Equipment(name=name, model=model))
+    for name, model, is_active in _EQUIPMENT:
+        db.add(Equipment(name=name, model=model, is_active=is_active))
 
     db.commit()

@@ -26,6 +26,8 @@
 APP_TIMEZONE (по умолчанию Europe/Samara), перерыв 12:00–13:00; оборудование использует
 тот же календарь. Операция целиком укладывается в один рабочий кусок (до 4 ч); более
 длинные задачи в этой версии не делятся по перерыву и не планируются.
+
+**Оборудование:** в расчёт попадают только записи ``Equipment`` с ``is_active is True``.
 """
 from __future__ import annotations
 
@@ -45,9 +47,15 @@ EXCLUDED_OUTSIDE_PERIOD = "SCHEDULE_EXCLUDED_OUTSIDE_PERIOD"
 EXCLUDED_NO_PAIR = "SCHEDULE_EXCLUDED_NO_PAIR"
 """Для операции нет допустимой пары «рабочий (профессия) + оборудование (модель)»."""
 
+EXCLUDED_NO_ACTIVE_EQUIPMENT_FOR_MODEL = "SCHEDULE_EXCLUDED_NO_ACTIVE_EQUIPMENT_FOR_MODEL"
+"""Есть единицы нужной модели, но все выключены (is_active=False); в планировании не участвуют."""
+
 EXCLUDED_TIME_CONFLICT = "SCHEDULE_EXCLUDED_TIME_CONFLICT"
 """Пары ресурсов есть, но не удаётся разместить операцию без пересечения по времени
 в допустимом окне (конфликт по времени / исчерпание слотов в пределах периода)."""
+
+EXCLUDED_ORDER_STATUS = "SCHEDULE_EXCLUDED_ORDER_STATUS"
+"""Заказ не в статусе, допускаемом к планированию (см. backend.order_status)."""
 
 
 class PlannedOperation(TypedDict):
@@ -238,14 +246,16 @@ def greedy_planner(
 
     sorted_orders = sorted(orders, key=_order_sort_key)
 
+    active_equipment = [e for e in equipment if e.is_active]
+
     worker_busy: dict[int, list[tuple[datetime, datetime]]] = {w.id: [] for w in workers}
-    equipment_busy: dict[int, list[tuple[datetime, datetime]]] = {e.id: [] for e in equipment}
+    equipment_busy: dict[int, list[tuple[datetime, datetime]]] = {e.id: [] for e in active_equipment}
 
     workers_by_profession: dict[str, list[Worker]] = {}
     for w in sorted(workers, key=lambda x: x.id):
         workers_by_profession.setdefault(w.profession, []).append(w)
     equipment_by_model: dict[str, list[Equipment]] = {}
-    for e in sorted(equipment, key=lambda x: x.id):
+    for e in sorted(active_equipment, key=lambda x: x.id):
         equipment_by_model.setdefault(e.model, []).append(e)
 
     result: list[PlannedOperation] = []
@@ -299,16 +309,29 @@ def greedy_planner(
             if not cand_workers or not cand_equipment:
                 task_label = task.name or f"операция #{task.sequence_number}"
                 order_planned = False
+                any_equip_for_model = any(e.model == mod for e in equipment)
                 if not cand_workers and not cand_equipment:
-                    detail = "нет ни исполнителя с нужной профессией, ни оборудования с нужной моделью"
+                    if any_equip_for_model:
+                        detail = (
+                            f"нет исполнителя с профессией «{prof}»; по модели «{mod}» есть единицы, "
+                            "но все выключены (is_active=False)."
+                        )
+                        fail_code = EXCLUDED_NO_ACTIVE_EQUIPMENT_FOR_MODEL
+                    else:
+                        detail = "нет ни исполнителя с нужной профессией, ни оборудования с нужной моделью"
+                        fail_code = EXCLUDED_NO_PAIR
                 elif not cand_workers:
                     detail = f"нет исполнителя с профессией «{prof}»"
+                    fail_code = EXCLUDED_NO_PAIR
+                elif any_equip_for_model:
+                    detail = f"по модели «{mod}» есть единицы оборудования, но все выключены (is_active=False)"
+                    fail_code = EXCLUDED_NO_ACTIVE_EQUIPMENT_FOR_MODEL
                 else:
                     detail = f"нет оборудования с моделью «{mod}»"
+                    fail_code = EXCLUDED_NO_PAIR
                 fail_reason = (
                     f"Для операции «{task_label}» не найдена допустимая пара «рабочий + оборудование»: {detail}."
                 )
-                fail_code = EXCLUDED_NO_PAIR
                 break
 
             best_start: datetime | None = None
@@ -370,7 +393,7 @@ def greedy_planner(
         if not order_planned:
             result = [r for r in result if r["order_id"] != order.id]
             worker_busy = {w.id: [] for w in workers}
-            equipment_busy = {e.id: [] for e in equipment}
+            equipment_busy = {e.id: [] for e in active_equipment}
             for op in result:
                 worker_busy[op["worker_id"]].append((op["start_time"], op["end_time"]))
                 equipment_busy[op["equipment_id"]].append((op["start_time"], op["end_time"]))

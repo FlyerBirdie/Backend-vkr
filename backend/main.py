@@ -14,6 +14,7 @@ from fastapi.openapi.utils import get_openapi
 
 from backend.auth_deps import get_current_planner
 from backend.database import Base, engine, SessionLocal
+from backend.db_migrations import ensure_equipment_is_active_column, ensure_orders_status_column
 from backend.demo_data import init_demo_data
 from backend.routers import auth, equipment, health, operations, orders, schedule, tasks, tech_processes, workers
 
@@ -21,6 +22,8 @@ from backend.routers import auth, equipment, health, operations, orders, schedul
 def create_tables_and_demo() -> None:
     """Создать таблицы и при необходимости заполнить демо-данными."""
     Base.metadata.create_all(bind=engine)
+    ensure_orders_status_column(engine)
+    ensure_equipment_is_active_column(engine)
     db = SessionLocal()
     try:
         init_demo_data(db)

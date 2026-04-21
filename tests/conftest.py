@@ -21,6 +21,8 @@ from backend.database import Base, SessionLocal, engine
 
 @pytest.fixture
 def db_session() -> Session:
+    # Сброс схемы: тот же engine, что у TestClient(app), может уже содержать демо после startup.
+    Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     session = SessionLocal()
     try:

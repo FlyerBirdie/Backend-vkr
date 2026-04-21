@@ -7,6 +7,7 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 
 from backend.models import Equipment, Order, Task, TechProcess, Worker
+from backend.order_status import OrderStatus
 from backend.planning_validation import validate_planning_inputs
 
 
@@ -36,6 +37,7 @@ def test_validation_fails_without_matching_worker(db_session: Session) -> None:
         planned_start=_utc(2026, 1, 1),
         planned_end=_utc(2026, 12, 31),
         tech_process_id=tp.id,
+        status=OrderStatus.scheduled.value,
     )
     db_session.add(o)
     db_session.commit()

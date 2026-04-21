@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Literal
 
@@ -71,12 +71,17 @@ def validate_planning_inputs(
     Проверка данных из БД перед вызовом планировщика.
 
     Блокирует расчёт при: пустом ТП, некорректных полях задач, отсутствии рабочего
-    или оборудования под профессию/модель, некорректном окне заказа или периода.
+    или **активного** оборудования (``is_active``) под профессию/модель, некорректном окне заказа или периода.
+
+    Окно заказа: если из БД приходят наивные datetime (типично SQLite без сохранения
+    смещения), они интерпретируются как UTC — согласовано с ``greedy_planner`` и
+    записью демо-данных в UTC.
     """
     result = PlanningValidationResult()
 
     profs = {w.profession for w in workers}
-    models = {e.model for e in equipment}
+    models_active = {e.model for e in equipment if e.is_active}
+    models_any = {e.model for e in equipment}
 
     if period_start.tzinfo is None or period_end.tzinfo is None:
         result.errors.append(
@@ -101,20 +106,14 @@ def validate_planning_inputs(
 
     for order in orders:
         ps, pe = order.planned_start, order.planned_end
-        if ps.tzinfo is None or pe.tzinfo is None:
-            result.errors.append(
-                PlanningIssue(
-                    level="error",
-                    code="ORDER_WINDOW_DATETIME_NAIVE",
-                    message=(
-                        f"Заказ «{order.name}»: planned_start и planned_end должны быть timezone-aware "
-                        "(ISO-8601 с Z или числовым смещением), без наивных datetime."
-                    ),
-                    order_id=order.id,
-                    order_name=order.name,
-                )
-            )
-            continue
+        if ps.tzinfo is None:
+            ps = ps.replace(tzinfo=timezone.utc)
+        else:
+            ps = ps.astimezone(timezone.utc)
+        if pe.tzinfo is None:
+            pe = pe.replace(tzinfo=timezone.utc)
+        else:
+            pe = pe.astimezone(timezone.utc)
         if ps >= pe:
             result.errors.append(
                 PlanningIssue(
@@ -257,20 +256,35 @@ def validate_planning_inputs(
                         task_id=task.id,
                     )
                 )
-            elif mod not in models:
-                result.errors.append(
-                    PlanningIssue(
-                        level="error",
-                        code="TASK_NO_MATCHING_EQUIPMENT",
-                        message=(
-                            f"ТП «{tp.name}», «{_task_label(task)}»: нет Equipment "
-                            f"с model «{mod}»."
-                        ),
-                        tech_process_id=tp.id,
-                        tech_process_name=tp.name,
-                        task_id=task.id,
+            elif mod not in models_active:
+                if mod in models_any:
+                    result.errors.append(
+                        PlanningIssue(
+                            level="error",
+                            code="TASK_NO_ACTIVE_EQUIPMENT_FOR_MODEL",
+                            message=(
+                                f"ТП «{tp.name}», «{_task_label(task)}»: для model «{mod}» "
+                                f"нет активного оборудования (все единицы is_active=False)."
+                            ),
+                            tech_process_id=tp.id,
+                            tech_process_name=tp.name,
+                            task_id=task.id,
+                        )
                     )
-                )
+                else:
+                    result.errors.append(
+                        PlanningIssue(
+                            level="error",
+                            code="TASK_NO_MATCHING_EQUIPMENT",
+                            message=(
+                                f"ТП «{tp.name}», «{_task_label(task)}»: нет Equipment "
+                                f"с model «{mod}»."
+                            ),
+                            tech_process_id=tp.id,
+                            tech_process_name=tp.name,
+                            task_id=task.id,
+                        )
+                    )
 
     return result
 

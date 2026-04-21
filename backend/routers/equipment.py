@@ -29,7 +29,7 @@ def list_equipment(db: Session = Depends(get_db)) -> list[EquipmentResponse]:
     summary="Создать единицу оборудования",
 )
 def create_equipment(body: EquipmentCreate, db: Session = Depends(get_db)) -> EquipmentResponse:
-    e = Equipment(name=body.name, model=body.model)
+    e = Equipment(name=body.name, model=body.model, is_active=body.is_active)
     db.add(e)
     try:
         db.commit()
@@ -56,6 +56,7 @@ def get_equipment(equipment_id: int, db: Session = Depends(get_db)) -> Equipment
     "/{equipment_id}",
     response_model=EquipmentResponse,
     summary="Обновить оборудование",
+    description="В т.ч. is_active=false — выключить из планирования без удаления записи.",
 )
 def update_equipment(
     equipment_id: int,

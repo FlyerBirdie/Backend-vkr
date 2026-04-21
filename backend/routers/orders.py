@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from backend.api_errors import conflict, not_found
 from backend.database import get_db
 from backend.models import Operation, Order, TechProcess
+from backend.order_status import OrderStatus, assert_order_status_transition_allowed
 from backend.schemas import OrderCreate, OrderResponse, OrderUpdate
 
 router = APIRouter(prefix="/orders", tags=["orders"])
@@ -28,7 +29,8 @@ def list_orders(db: Session = Depends(get_db)) -> list[OrderResponse]:
     response_model=OrderResponse,
     status_code=201,
     summary="Создать заказ",
-    description="planned_end > planned_start; tech_process_id должен существовать.",
+    description="planned_end > planned_start; tech_process_id должен существовать. "
+    "Поле status по умолчанию draft; для участия в POST /api/schedule задайте scheduled.",
 )
 def create_order(body: OrderCreate, db: Session = Depends(get_db)) -> OrderResponse:
     if not db.query(TechProcess).filter(TechProcess.id == body.tech_process_id).first():
@@ -45,6 +47,7 @@ def create_order(body: OrderCreate, db: Session = Depends(get_db)) -> OrderRespo
         planned_start=body.planned_start,
         planned_end=body.planned_end,
         tech_process_id=body.tech_process_id,
+        status=body.status.value,
     )
     db.add(o)
     try:
@@ -84,6 +87,17 @@ def update_order(
     data = body.model_dump(exclude_unset=True)
     if not data:
         raise HTTPException(status_code=422, detail={"code": "VALIDATION_ERROR", "message": "Нет полей для обновления."})
+    if "status" in data:
+        new_raw = data["status"]
+        new_s = new_raw.value if isinstance(new_raw, OrderStatus) else str(new_raw)
+        try:
+            assert_order_status_transition_allowed(str(o.status), new_s)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "ORDER_STATUS_TRANSITION_INVALID", "message": str(e)},
+            ) from e
+        data["status"] = new_s
     if "tech_process_id" in data:
         tid = data["tech_process_id"]
         if not db.query(TechProcess).filter(TechProcess.id == tid).first():
