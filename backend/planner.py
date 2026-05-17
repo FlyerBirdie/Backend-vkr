@@ -377,12 +377,6 @@ def schedule_eligible_orders_in_sequence(
 
             if best_start is None or best_worker is None or best_equip is None:
                 order_planned = False
-                fail_reason = (
-                    "Не удалось разместить операцию в допустимом окне: конфликт по времени "
-                    "после исчерпания слотов (все допустимые пары worker+equipment заняты "
-                    f"или не помещаются в период до {window_end.isoformat()})."
-                )
-                fail_code = EXCLUDED_TIME_CONFLICT
                 break
 
             end_time = best_start + timedelta(minutes=task.duration_minutes)
