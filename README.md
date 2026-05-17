@@ -52,6 +52,12 @@ REST API для расчёта расписания и справочников 
 | `SQL_ECHO` | Логировать SQL (`true` / `false`) |
 | `JWT_SECRET_KEY`, `JWT_EXPIRE_MINUTES` | Подпись и срок жизни JWT |
 | `PLANNER_USERNAME`, `PLANNER_PASSWORD` или `PLANNER_PASSWORD_HASH` | Учётная запись планировщика (в продакшене — только хэш пароля) |
+| `GENETIC_POP_SIZE`, `GENETIC_GENERATIONS` | Параметры генетического планировщика (`POST /api/schedule` с `planner_method: "genetic"`): размер популяции (по умолчанию 24) и число поколений (32) |
+| `GENETIC_CROSSOVER_PROB`, `GENETIC_MUTATION_PROB` | Вероятности кроссовера (0.9) и мутации (0.2) |
+| `GENETIC_SEED` | Seed ГА для воспроизводимости (по умолчанию 42) |
+| `GENETIC_ELIGIBLE_WARN_THRESHOLD` | Порог числа заказов в периоде; выше — предупреждение `SCHEDULE_GENETIC_LARGE_INPUT` в ответе (по умолчанию 40) |
+
+Генетический планировщик реализован **без библиотеки DEAP** (минимальная собственная схема кроссовера/мутации/тournament selection); жадный метод — `planner_method: "greedy"` (по умолчанию).
 
 ### PostgreSQL: типичные ошибки
 

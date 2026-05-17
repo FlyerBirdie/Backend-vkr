@@ -196,6 +196,10 @@ class ScheduleRequest(BaseModel):
     (например `...+04:00` для Самары или `Z` для UTC); наивные datetime не принимаются проверкой 422.
 
     Если оба поля периода не заданы, используется период по умолчанию (см. описание POST /api/schedule).
+
+    Поле ``planner_method`` выбирает алгоритм: ``greedy`` (по умолчанию, прежнее поведение) или ``genetic``.
+    Для ``genetic`` при большом числе заказов в расчёте может добавляться предупреждение ``SCHEDULE_GENETIC_LARGE_INPUT``
+    (см. ``GENETIC_ELIGIBLE_WARN_THRESHOLD``); время счёта растёт с числом поколений и размером популяции (``GENETIC_*``).
     """
 
     period_start: datetime | None = Field(
@@ -205,6 +209,13 @@ class ScheduleRequest(BaseModel):
     period_end: datetime | None = Field(
         default=None,
         description="Конец планового периода (timezone-aware). Операции не выходят за min(period_end, planned_end заказа).",
+    )
+    planner_method: Literal["greedy", "genetic"] = Field(
+        default="greedy",
+        description=(
+            "Алгоритм планирования: `greedy` — жадный (как раньше), `genetic` — эвристика на ГА "
+            "(тот же контракт и ответ ScheduleResponse; см. backend/genetic_planner.py и переменные GENETIC_*)."
+        ),
     )
 
     @model_validator(mode="after")
@@ -237,7 +248,8 @@ class ScheduleIssueItem(BaseModel):
         description=(
             "Стабильный код, например TASK_NO_MATCHING_WORKER или "
             "SCHEDULE_EXCLUDED_OUTSIDE_PERIOD / SCHEDULE_EXCLUDED_NO_PAIR / SCHEDULE_EXCLUDED_NO_ACTIVE_EQUIPMENT_FOR_MODEL / "
-            "SCHEDULE_EXCLUDED_TIME_CONFLICT / SCHEDULE_EXCLUDED_ORDER_STATUS; в 422 также TASK_NO_ACTIVE_EQUIPMENT_FOR_MODEL."
+            "SCHEDULE_EXCLUDED_TIME_CONFLICT / SCHEDULE_EXCLUDED_ORDER_STATUS; в 422 также TASK_NO_ACTIVE_EQUIPMENT_FOR_MODEL; "
+            "при большом числе заказов и методе genetic — SCHEDULE_GENETIC_LARGE_INPUT."
         ),
     )
     message: str
@@ -372,6 +384,9 @@ class ScheduleResponse(BaseModel):
     )
     metrics: ScheduleReportMetrics = Field(
         description="Загрузка персонала и оборудования, агрегаты, узкие места, рекомендации-заглушки.",
+    )
+    planner_used: Literal["greedy", "genetic"] = Field(
+        description="Фактически применённый метод планирования (совпадает с `planner_method` в теле запроса).",
     )
 
 

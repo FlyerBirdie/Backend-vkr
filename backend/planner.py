@@ -13,7 +13,8 @@
 **MVP — жадный отбор:** заказы обрабатываются в порядке убывания прибыли, при равенстве —
 по возрастанию id (детерминизм). Для каждого заказа операции ТП идут по sequence_number;
 следующая операция не раньше окончания предыдущей. Эвристика не гарантирует глобальный
-оптимум по прибыли.
+оптимум по прибыли. Альтернативный порядок заказов ищется в ``backend/genetic_planner.py``
+(ГА, те же функции размещения).
 
 **Опционально для v2:** полный перебор подмножеств заказов растёт как O(2^n); для точного
 максимума прибыли при «всё или ничё» можно рассмотреть ILP/MILP, branch-and-bound или
@@ -225,44 +226,20 @@ def _verify_intra_order_sequence(planned: list[PlannedOperation], orders_by_id: 
             prev_end = op["end_time"]
 
 
-def greedy_planner(
-    orders: list[Order],
-    workers: list[Worker],
-    equipment: list[Equipment],
+def partition_orders_by_period_window(
+    orders_in_iteration_order: list[Order],
     period_start: datetime,
     period_end: datetime,
-) -> tuple[list[PlannedOperation], list[PlannerExclusion]]:
+) -> tuple[list[Order], list[PlannerExclusion]]:
     """
-    Жадный планировщик: заказы в порядке (-profit, id), операции по sequence_number,
-    выбор ближайшего допустимого слота; при равном времени старта — меньший worker_id,
-    затем equipment_id (детерминизм).
-
-    Возвращает запланированные операции и список исключённых заказов с кодами причин.
+    Разделение заказов: пересечение окна заказа с ``[period_start, period_end]`` непусто —
+    в ``eligible`` (в том же порядке, что во входном списке); иначе запись в ``exclusions``.
     """
     ps = _ensure_utc(period_start)
     pe = _ensure_utc(period_end)
-
-    period_work_chunks = work_intervals_utc(ps, pe)
-
-    sorted_orders = sorted(orders, key=_order_sort_key)
-
-    active_equipment = [e for e in equipment if e.is_active]
-
-    worker_busy: dict[int, list[tuple[datetime, datetime]]] = {w.id: [] for w in workers}
-    equipment_busy: dict[int, list[tuple[datetime, datetime]]] = {e.id: [] for e in active_equipment}
-
-    workers_by_profession: dict[str, list[Worker]] = {}
-    for w in sorted(workers, key=lambda x: x.id):
-        workers_by_profession.setdefault(w.profession, []).append(w)
-    equipment_by_model: dict[str, list[Equipment]] = {}
-    for e in sorted(active_equipment, key=lambda x: x.id):
-        equipment_by_model.setdefault(e.model, []).append(e)
-
-    result: list[PlannedOperation] = []
-    exclusions: list[PlannerExclusion] = []
-
     eligible: list[Order] = []
-    for order in sorted_orders:
+    exclusions: list[PlannerExclusion] = []
+    for order in orders_in_iteration_order:
         o_start = _ensure_utc(order.planned_start)
         o_end = _ensure_utc(order.planned_end)
         window_start = max(ps, o_start)
@@ -281,8 +258,41 @@ def greedy_planner(
             )
             continue
         eligible.append(order)
+    return eligible, exclusions
 
-    orders_by_id = {o.id: o for o in orders}
+
+def schedule_eligible_orders_in_sequence(
+    eligible: list[Order],
+    workers: list[Worker],
+    equipment: list[Equipment],
+    period_start: datetime,
+    period_end: datetime,
+) -> tuple[list[PlannedOperation], list[PlannerExclusion]]:
+    """
+    Размещает заказы **строго в переданном порядке** (каждый целиком или исключает — как жадный
+    цикл без предварительной сортировки). Используется ``greedy_planner`` и генетическим планировщиком.
+    """
+    ps = _ensure_utc(period_start)
+    pe = _ensure_utc(period_end)
+
+    period_work_chunks = work_intervals_utc(ps, pe)
+
+    active_equipment = [e for e in equipment if e.is_active]
+
+    worker_busy: dict[int, list[tuple[datetime, datetime]]] = {w.id: [] for w in workers}
+    equipment_busy: dict[int, list[tuple[datetime, datetime]]] = {e.id: [] for e in active_equipment}
+
+    workers_by_profession: dict[str, list[Worker]] = {}
+    for w in sorted(workers, key=lambda x: x.id):
+        workers_by_profession.setdefault(w.profession, []).append(w)
+    equipment_by_model: dict[str, list[Equipment]] = {}
+    for e in sorted(active_equipment, key=lambda x: x.id):
+        equipment_by_model.setdefault(e.model, []).append(e)
+
+    result: list[PlannedOperation] = []
+    exclusions: list[PlannerExclusion] = []
+
+    orders_by_id = {o.id: o for o in eligible}
 
     for order in eligible:
         o_start = _ensure_utc(order.planned_start)
@@ -410,3 +420,27 @@ def greedy_planner(
     _verify_intra_order_sequence(result, orders_by_id)
 
     return result, exclusions
+
+
+def greedy_planner(
+    orders: list[Order],
+    workers: list[Worker],
+    equipment: list[Equipment],
+    period_start: datetime,
+    period_end: datetime,
+) -> tuple[list[PlannedOperation], list[PlannerExclusion]]:
+    """
+    Жадный планировщик: заказы в порядке (-profit, id), операции по sequence_number,
+    выбор ближайшего допустимого слота; при равном времени старта — меньший worker_id,
+    затем equipment_id (детерминизм).
+
+    Возвращает запланированные операции и список исключённых заказов с кодами причин.
+    """
+    sorted_orders = sorted(orders, key=_order_sort_key)
+    eligible, outside_excl = partition_orders_by_period_window(
+        sorted_orders, period_start, period_end
+    )
+    planned, inc_excl = schedule_eligible_orders_in_sequence(
+        eligible, workers, equipment, period_start, period_end
+    )
+    return planned, outside_excl + inc_excl

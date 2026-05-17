@@ -1,6 +1,7 @@
 """Пересчёт расписания (единственное место массового удаления Operation)."""
 from __future__ import annotations
 
+import os
 from decimal import Decimal
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session
 from backend.database import get_db
 from backend.models import Equipment, Operation, Order, Worker
 from backend.order_status import human_reason_excluded_from_planning, statuses_eligible_for_planning
+from backend.genetic_planner import genetic_planner
 from backend.planner import (
     EXCLUDED_ORDER_STATUS,
     PlannedOperation,
@@ -16,6 +18,7 @@ from backend.planner import (
     default_planning_period,
     greedy_planner,
     order_sort_key_for_planner,
+    partition_orders_by_period_window,
     total_profit_of_included_orders,
 )
 from backend.planning_validation import (
@@ -62,8 +65,16 @@ def build_schedule(
     db: Session = Depends(get_db),
 ) -> ScheduleResponse:
     """
-    Пересчитывает расписание жадным алгоритмом: старые записи `operations` удаляются
-    только после успешной **предпроверки** данных (ТП, задачи, наличие Worker/Equipment).
+    Пересчитывает расписание алгоритмом из поля **planner_method** (``greedy`` или ``genetic``);
+    старые записи `operations` удаляются только после успешной **предпроверки** данных
+    (ТП, задачи, наличие Worker/Equipment). Жадный метод совпадает с предыдущей версией API;
+    генетический использует те же ограничения и формат ответа.
+
+    **Производительность ``genetic``:** параметры задаются переменными окружения ``GENETIC_*`` (см.
+    ``backend/genetic_planner.py``). На больших наборах заказов расчёт может занять заметное время;
+    при числе заказов со статусом ``scheduled``, пересекающихся с периодом, выше порога
+    ``GENETIC_ELIGIBLE_WARN_THRESHOLD`` (по умолчанию 40) в ``issues`` добавляется предупреждение
+    ``SCHEDULE_GENETIC_LARGE_INPUT``.
 
     **Плановый период:** в запросе задаются **абсолютные** моменты времени в ISO-8601 с
     явным смещением (`Z` / `+00:00` для UTC или `+04:00` для Europe/Samara и т.д.); наивные
@@ -133,9 +144,14 @@ def build_schedule(
 
     planned: list[PlannedOperation]
     planner_exclusions: list[PlannerExclusion]
-    planned, planner_exclusions = greedy_planner(
-        planning_orders, workers, equipment, period_start, period_end
-    )
+    if body.planner_method == "genetic":
+        planned, planner_exclusions = genetic_planner(
+            planning_orders, workers, equipment, period_start, period_end
+        )
+    else:
+        planned, planner_exclusions = greedy_planner(
+            planning_orders, workers, equipment, period_start, period_end
+        )
 
     orders_by_id = {o.id: o for o in planning_orders}
     assert_planned_all_or_nothing(planned, orders_by_id)
@@ -184,6 +200,25 @@ def build_schedule(
         ScheduleIssueItem.model_validate(planning_issue_to_api_dict(w))
         for w in validation_result.warnings
     ]
+    if body.planner_method == "genetic":
+        thr = int(os.getenv("GENETIC_ELIGIBLE_WARN_THRESHOLD", "40"))
+        eligible_for_warn, _ = partition_orders_by_period_window(
+            sorted(planning_orders, key=order_sort_key_for_planner),
+            period_start,
+            period_end,
+        )
+        if len(eligible_for_warn) > thr:
+            issues.append(
+                ScheduleIssueItem(
+                    level="warning",
+                    code="SCHEDULE_GENETIC_LARGE_INPUT",
+                    message=(
+                        f"В генетическом планировщике много заказов в периоде ({len(eligible_for_warn)} > {thr}); "
+                        "увеличьте GENETIC_ELIGIBLE_WARN_THRESHOLD или сократите набор, либо уменьшите GENETIC_POP_SIZE / "
+                        "GENETIC_GENERATIONS для ускорения."
+                    ),
+                )
+            )
     for ex in merged_exclusions:
         issues.append(
             ScheduleIssueItem(
@@ -264,4 +299,5 @@ def build_schedule(
         issues=issues,
         report_summary=report_summary,
         metrics=metrics,
+        planner_used=body.planner_method,
     )
