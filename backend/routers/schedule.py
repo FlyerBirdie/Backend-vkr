@@ -2,14 +2,20 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
 from backend.models import Equipment, Operation, Order, Worker
-from backend.order_status import human_reason_excluded_from_planning, statuses_eligible_for_planning
+from backend.order_status import (
+    human_reason_excluded_from_planning,
+    promote_included_orders_to_in_progress,
+    statuses_eligible_for_planning,
+)
+from backend.schedule_snapshot import build_schedule_response_from_stored
 from backend.genetic_planner import genetic_planner
 from backend.planner import (
     EXCLUDED_ORDER_STATUS,
@@ -44,6 +50,51 @@ from backend.schemas import (
 )
 
 router = APIRouter(tags=["schedule"])
+
+
+@router.get(
+    "/schedule/snapshot",
+    response_model=ScheduleResponse,
+    summary="Снимок сохранённого расписания",
+    responses={404: {"description": "В базе нет запланированных операций."}},
+)
+def get_schedule_snapshot(
+    db: Session = Depends(get_db),
+    period_start: datetime | None = Query(
+        default=None,
+        description="Опционально: начало периода для метрик (timezone-aware ISO). Иначе — по min/max операций.",
+    ),
+    period_end: datetime | None = Query(
+        default=None,
+        description="Опционально: конец периода для метрик. Задавайте вместе с period_start.",
+    ),
+) -> ScheduleResponse:
+    """
+    Восстанавливает последнее сохранённое расписание из таблицы ``operations``
+  (после POST /api/schedule). Удобно после перезагрузки страницы без повторного расчёта.
+    """
+    if (period_start is None) ^ (period_end is None):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "VALIDATION_ERROR",
+                "message": "Укажите оба period_start и period_end или ни одного.",
+            },
+        )
+    snapshot = build_schedule_response_from_stored(
+        db,
+        period_start=period_start,
+        period_end=period_end,
+    )
+    if snapshot is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "SCHEDULE_SNAPSHOT_EMPTY",
+                "message": "Сохранённое расписание отсутствует. Выполните планирование.",
+            },
+        )
+    return snapshot
 
 
 @router.post(
@@ -86,6 +137,9 @@ def build_schedule(
 
     Заказ либо целиком попадает в ответ (`included_orders`), либо перечислен в `excluded_orders`
     с кодом и причиной (принцип «всё или ничё»). Частично запланированных заказов в `operations` нет.
+
+    **Статусы после расчёта:** заказы из `included_orders` переводятся в ``in_progress``;
+    для повторного планирования верните статус ``scheduled`` через PATCH заказа.
 
     **Статусы заказов:** в расчёт попадают только заказы со статусом ``scheduled``; остальные
     не меняют предпроверку ТП и не передаются в планировщик, но перечисляются в ``excluded_orders``
@@ -156,6 +210,8 @@ def build_schedule(
     orders_by_id = {o.id: o for o in planning_orders}
     assert_planned_all_or_nothing(planned, orders_by_id)
 
+    order_ids_planned: set[int] = {p["order_id"] for p in planned}
+
     try:
         db.query(Operation).delete()
         for p in planned:
@@ -168,12 +224,11 @@ def build_schedule(
                 end_time=p["end_time"],
             )
             db.add(op)
+        promote_included_orders_to_in_progress(db, order_ids_planned)
         db.commit()
     except Exception:
         db.rollback()
         raise
-
-    order_ids_planned: set[int] = {p["order_id"] for p in planned}
 
     total_profit = total_profit_of_included_orders(planned, orders_by_id)
 

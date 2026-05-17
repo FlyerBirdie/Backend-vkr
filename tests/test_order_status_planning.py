@@ -69,3 +69,34 @@ def test_schedule_excludes_cancelled_order(client: TestClient) -> None:
     hit = [x for x in sc.json()["excluded_orders"] if x["order_id"] == new_id]
     assert len(hit) == 1
     assert hit[0]["code"] == EXCLUDED_ORDER_STATUS
+
+
+def test_reset_all_orders_to_scheduled(client: TestClient) -> None:
+    h = _bearer(client)
+    ro = client.get("/api/orders", headers=h)
+    assert ro.status_code == 200
+    ref = ro.json()[0]
+
+    cr = client.post(
+        "/api/orders",
+        json={
+            "name": "Тест массового в плане",
+            "profit": "12.00",
+            "planned_start": ref["planned_start"],
+            "planned_end": ref["planned_end"],
+            "tech_process_id": ref["tech_process_id"],
+            "status": "in_progress",
+        },
+        headers=h,
+    )
+    assert cr.status_code == 201, cr.text
+    in_progress_id = cr.json()["id"]
+
+    rs = client.post("/api/orders/reset-to-scheduled", headers=h)
+    assert rs.status_code == 200, rs.text
+    body = rs.json()
+    assert body["updated_count"] >= 1
+
+    got = client.get(f"/api/orders/{in_progress_id}", headers=h)
+    assert got.status_code == 200
+    assert got.json()["status"] == "scheduled"

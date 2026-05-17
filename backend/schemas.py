@@ -40,6 +40,26 @@ class OrderResponse(BaseModel):
     )
 
 
+class OrderStatusBulkSkipItem(BaseModel):
+    """Заказ, не переведённый в scheduled при массовой операции."""
+
+    order_id: int
+    order_name: str
+    previous_status: str
+    reason: str
+
+
+class OrdersResetToScheduledResponse(BaseModel):
+    """Результат POST /api/orders/reset-to-scheduled."""
+
+    updated_count: int = Field(description="Сколько заказов переведено в scheduled.")
+    skipped_count: int = Field(description="Сколько заказов пропущено (завершённые, отменённые и т.д.).")
+    skipped: list[OrderStatusBulkSkipItem] = Field(
+        default_factory=list,
+        description="Детали по пропущенным заказам.",
+    )
+
+
 class OrderUpdate(BaseModel):
     """Частичное обновление заказа (все поля опциональны)."""
 
@@ -385,8 +405,12 @@ class ScheduleResponse(BaseModel):
     metrics: ScheduleReportMetrics = Field(
         description="Загрузка персонала и оборудования, агрегаты, узкие места, рекомендации-заглушки.",
     )
-    planner_used: Literal["greedy", "genetic"] = Field(
-        description="Фактически применённый метод планирования (совпадает с `planner_method` в теле запроса).",
+    planner_used: Literal["greedy", "genetic"] | None = Field(
+        default=None,
+        description=(
+            "Фактически применённый метод планирования (совпадает с `planner_method` в теле запроса). "
+            "Для снимка из БД (`GET /api/schedule/snapshot`) — `null`."
+        ),
     )
 
 

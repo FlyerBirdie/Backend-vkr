@@ -7,8 +7,18 @@ from sqlalchemy.orm import Session
 from backend.api_errors import conflict, not_found
 from backend.database import get_db
 from backend.models import Operation, Order, TechProcess
-from backend.order_status import OrderStatus, assert_order_status_transition_allowed
-from backend.schemas import OrderCreate, OrderResponse, OrderUpdate
+from backend.order_status import (
+    OrderStatus,
+    assert_order_status_transition_allowed,
+    reset_orders_to_scheduled,
+)
+from backend.schemas import (
+    OrderCreate,
+    OrderResponse,
+    OrdersResetToScheduledResponse,
+    OrderStatusBulkSkipItem,
+    OrderUpdate,
+)
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -22,6 +32,30 @@ router = APIRouter(prefix="/orders", tags=["orders"])
 def list_orders(db: Session = Depends(get_db)) -> list[OrderResponse]:
     orders = db.query(Order).order_by(Order.id).all()
     return [OrderResponse.model_validate(o) for o in orders]
+
+
+@router.post(
+    "/reset-to-scheduled",
+    response_model=OrdersResetToScheduledResponse,
+    summary="Все заказы → статус «в плане» (scheduled)",
+    description=(
+        "Переводит в ``scheduled`` все заказы, для которых это разрешено правилами переходов "
+        "(черновик, в плане, в работе). Завершённые и отменённые не меняются — перечисляются в ``skipped``."
+    ),
+)
+def reset_all_orders_to_scheduled(db: Session = Depends(get_db)) -> OrdersResetToScheduledResponse:
+    try:
+        updated, skipped_raw = reset_orders_to_scheduled(db)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    skipped = [OrderStatusBulkSkipItem.model_validate(x) for x in skipped_raw]
+    return OrdersResetToScheduledResponse(
+        updated_count=updated,
+        skipped_count=len(skipped),
+        skipped=skipped,
+    )
 
 
 @router.post(

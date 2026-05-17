@@ -58,6 +58,57 @@ def human_reason_excluded_from_planning(status: str) -> str:
     return f"Заказ в статусе «{status}» не допущен к планированию в этом прогоне."
 
 
+def reset_orders_to_scheduled(db: object) -> tuple[int, list[dict[str, str | int]]]:
+    """
+    Переводит все заказы в ``scheduled``, где переход допустим.
+    Возвращает (число обновлённых, список пропущенных с причиной).
+    """
+    from backend.models import Order
+
+    target = OrderStatus.scheduled.value
+    updated = 0
+    skipped: list[dict[str, str | int]] = []
+    orders = db.query(Order).order_by(Order.id).all()
+    for o in orders:
+        current = str(o.status)
+        if current == target:
+            continue
+        try:
+            assert_order_status_transition_allowed(current, target)
+        except ValueError as e:
+            skipped.append(
+                {
+                    "order_id": o.id,
+                    "order_name": o.name,
+                    "previous_status": current,
+                    "reason": str(e),
+                }
+            )
+            continue
+        o.status = target
+        updated += 1
+    if updated:
+        db.flush()
+    return updated, skipped
+
+
+def promote_included_orders_to_in_progress(db: object, order_ids: set[int]) -> int:
+    """
+    После успешного планирования: заказы, полностью вошедшие в расписание,
+    переводятся в ``in_progress``. Возвращает число обновлённых строк.
+    """
+    if not order_ids:
+        return 0
+    from backend.models import Order
+
+    return (
+        db.query(Order)
+        .filter(Order.id.in_(order_ids))
+        .filter(Order.status == OrderStatus.scheduled.value)
+        .update({Order.status: OrderStatus.in_progress.value}, synchronize_session=False)
+    )
+
+
 def assert_order_status_transition_allowed(current: str, new: str) -> None:
     """
     Проверка PATCH: допустимые переходы (MVP).
