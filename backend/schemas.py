@@ -325,8 +325,6 @@ class ResourceUtilizationRow(BaseModel):
 class AggregateUtilizationMetrics(BaseModel):
     """Сводные показатели по справочнику Worker / Equipment."""
 
-    workers_mean_utilization_percent: float = Field(description="Среднее U по всем рабочим (вкл. 0% без операций).")
-    equipment_mean_utilization_percent: float = Field(description="Среднее U по всем единицам оборудования.")
     total_busy_minutes_sum_workers: float = Field(
         description="Сумма минут занятости по всем рабочим (может быть > T_avail при параллельной работе)."
     )

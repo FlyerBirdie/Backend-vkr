@@ -11,8 +11,6 @@
 - Простой (idle) в %: 100 − U (для отчёта об «узких местах» по низкой загрузке).
 
 Агрегаты:
-- Средняя загрузка по персоналу: среднее арифметическое U по всем Worker из БД на момент расчёта.
-- Средняя загрузка по оборудованию: среднее U по всем Equipment из БД.
 - «Ванна» по персоналу: pool_worker = min(100, Σ T_busy(w) / (N_workers · T_avail) · 100);
   аналогично pool_equipment (сумма минут занятости по всем станкам / (N_eq · T_avail) · 100).
   Сумма занятых минут по разным рабочим может превышать T_avail из‑за параллельной работы.
@@ -49,8 +47,6 @@ class MetricsComputation:
     available_minutes: int
     worker_rows: list[dict]
     equipment_rows: list[dict]
-    workers_avg: float
-    equipment_avg: float
     total_busy_workers: float
     total_busy_equipment: float
     pool_worker_load_percent: float
@@ -76,8 +72,6 @@ def compute_schedule_metrics(
             available_minutes=0,
             worker_rows=[],
             equipment_rows=[],
-            workers_avg=0.0,
-            equipment_avg=0.0,
             total_busy_workers=0.0,
             total_busy_equipment=0.0,
             pool_worker_load_percent=0.0,
@@ -128,14 +122,6 @@ def compute_schedule_metrics(
             }
         )
 
-    workers_avg = (
-        sum(r["utilization_percent"] for r in worker_rows) / len(worker_rows) if worker_rows else 0.0
-    )
-    equipment_avg = (
-        sum(r["utilization_percent"] for r in equipment_rows) / len(equipment_rows)
-        if equipment_rows
-        else 0.0
-    )
     total_busy_w = sum(busy_w.values())
     total_busy_e = sum(busy_e.values())
     n_w, n_e = len(workers), len(equipment)
@@ -180,8 +166,6 @@ def compute_schedule_metrics(
         available_minutes=t_avail,
         worker_rows=worker_rows,
         equipment_rows=equipment_rows,
-        workers_avg=round(workers_avg, 2),
-        equipment_avg=round(equipment_avg, 2),
         total_busy_workers=round(total_busy_w, 2),
         total_busy_equipment=round(total_busy_e, 2),
         pool_worker_load_percent=round(pool_w, 2),

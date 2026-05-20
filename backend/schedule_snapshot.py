@@ -115,8 +115,6 @@ def build_schedule_response_from_stored(
         workers=[ResourceUtilizationRow.model_validate(r) for r in mc.worker_rows],
         equipment=[ResourceUtilizationRow.model_validate(r) for r in mc.equipment_rows],
         aggregate=AggregateUtilizationMetrics(
-            workers_mean_utilization_percent=mc.workers_avg,
-            equipment_mean_utilization_percent=mc.equipment_avg,
             total_busy_minutes_sum_workers=mc.total_busy_workers,
             total_busy_minutes_sum_equipment=mc.total_busy_equipment,
             pool_worker_load_percent=mc.pool_worker_load_percent,
